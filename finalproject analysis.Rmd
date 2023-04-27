@@ -1,0 +1,192 @@
+---
+title: "496 Project"
+output: html_notebook
+---
+
+```{r}
+# pop a couple packages in
+library(astsa)
+library(dynlm)
+library(dplyr)
+library(lmtest)
+library(ggplot2)
+library(forecast)
+library(tidyr)
+```
+
+
+```{r}
+# start by setting the working directory and importing the dataset so
+# we can clean it
+setwd("C:/Users/c17kr/Dropbox/School Stuff/Social Data Analytics 496")
+
+gtd <- read.csv("globalterrorismdb_0718dist.csv", header = TRUE, stringsAsFactors = FALSE)
+
+```
+
+```{r}
+# now we want to clean the dataset
+# starting with cutting down to only US events
+
+gtdUS <- gtd[gtd$country == 217,] # this slims down dataset to 2836
+```
+
+```{r}
+# next, remove any blank summaries
+gtdUS <- subset(gtdUS, !grepl("^\\s*$", summary))
+# this removes just over 1000 instances, now have 1783
+```
+
+```{r}
+# want to export this now clean dataset so we can reference it in the future without having to redo the cleaning
+write.csv(gtdUS, file = "gtdUSclean.csv", row.names = FALSE)
+
+# writing the new one that has two columns i created below, code is out of order
+write.csv(new_df, file = "gtdUSsimple.csv", row.names = FALSE)
+
+```
+
+```{r}
+# import code for the new dataset we created, so we don't have
+# to clean anymore
+gtdUS <- read.csv("gtdUSclean.csv", header = TRUE, stringsAsFactors = FALSE)
+# also read in the religiosity data
+library(readxl)
+religiositydata <- read_excel("C:/Users/c17kr/Dropbox/School Stuff/Social Data Analytics 496/religiositydata.xlsx")
+```
+
+
+```{r}
+# there are a few duplicate rows
+# these show up in cases where the date of the attack was unknown,
+# so they repeat the exact same incident on each possible date
+gtdUS <- gtdUS[!duplicated(gtdUS$summary), ]
+
+# simplify the dataset to only include two columns for computational sake
+new_df <- gtdUS[, c("summary", "X")]
+```
+
+
+```{r}
+# now that we used python zero-shot classifier to classify the data, can import new file
+# with labeled data
+gtd <- read.csv("gtdlabeled.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# the other file had the dates and i forgot to include them...
+gtdWithDates <- read.csv("gtdUSclean.csv", header = TRUE)
+gtd <- cbind(gtd, gtdWithDates[, c("iyear", "imonth", "iday")]) # this should add them on
+# the dates are separted into different columns for some reason, gotta combine them
+gtd$date <- paste(gtd$iyear, gtd$imonth, gtd$iday, sep = "-")
+gtd$date <- as.Date(gtd$date, format = "%Y-%m-%d")
+# now we have dates for each incident, fantastic!
+```
+
+
+```{r}
+# now we want to count the number of events each year, as well as getting a ratio
+# this allows us to compare the number of rwt events to the religiosity data
+# group the data by year and label and count the number of events for each group
+year_counts <- gtd %>%
+  group_by(year = format(date, "%Y"), label) %>%
+  summarize(count = n()) %>%
+  ungroup()
+
+# calculate the total number of events and the ratio of 1's that occurred for each year
+year_totals <- year_counts %>%
+  group_by(year) %>%
+  summarize(total = sum(count), 
+            ones = sum(count[label == 1]), 
+            ratio = ones / total)
+
+```
+
+```{r}
+# now we graph and begin time series regression
+# first, filter the years of religiosity bc it contains more data than gtd
+year_totals$year <- replace(year_totals$year, 48, "2018") # for some reason 2018 is NA
+religiositydata <- subset(religiositydata, year != 1993)
+# gtd doesn't have 1993 for some reason, so we remove it from religiosity so they match
+
+
+religiositydata <- religiositydata %>%
+  filter(year > 1969 & year <= 2018)
+```
+
+```{r}
+# now that everything is lined up, we graph
+ggplot(religiositydata, aes(x = year)) +
+  geom_line(aes(y = protestant, color = "Protestant")) +
+  geom_line(aes(y = christian, color = "Christian")) +
+  geom_line(aes(y = catholic, color = "Catholic")) +
+  geom_line(aes(y = none, color = "No Religious Affiliation")) +
+  labs(x = "Year", y = "Percentage", color = "Variable")
+
+# Plot for ones column
+ggplot(year_totals, aes(x = year, y = ones)) +
+  geom_line(aes(color = "blue"), group = 1) +
+  labs(x = "Year", y = "Count", title = "Number of Events per Year")
+
+# Plot for ratio column
+ggplot(year_totals, aes(x = year, y = ratio)) +
+  geom_line(aes(color = "red"), group = 1) +
+  labs(x = "Year", y = "Ratio", title = "Ratio of 1's per Year") +
+  ylim(0, 1)
+
+```
+
+```{r}
+# test for white noise, not expecting it for religious data, maybe for rwt
+Box.test(religiositydata$catholic, 24, 'Ljung')
+Box.test(religiositydata$none, 24, 'Ljung')
+Box.test(year_totals$ratio, 24, 'Ljung')
+# none are white noise, phew
+```
+
+
+
+```{r}
+# get a little acf action going for religiosity
+acf2(religiositydata$none) # AR8 model
+acf2(religiositydata$catholic) # AR8 model
+```
+
+```{r}
+# do the same for rwt
+acf2(year_totals$ratio) # AR4
+```
+
+```{r}
+# examine the residuals
+noReligionFit.ar8 <- sarima(religiositydata$none, p = 8, d = 0, q = 0, details = TRUE)
+catholicFit.ar8 <- sarima(religiositydata$catholic, p = 8, d = 0, q = 0, details = TRUE)
+ratioFit.ar4 <- sarima(year_totals$ratio, p = 4, d = 0, q = 0, details = TRUE)
+# looking good, random residuals is promising
+
+noReligionFit.ar8$ttable
+catholicFit.ar8$ttable
+ratioFit.ar4$ttable
+```
+
+```{r}
+# run a regression
+# Convert year column in year_totals to numeric
+year_totals$year <- as.numeric(year_totals$year)
+
+# Merge religiositydata and year_totals by year column
+merged_data <- merge(religiositydata, year_totals, by = "year")
+
+# Run time series regression
+ts_regression <- lm(ratio ~ protestant + catholic + none, data = merged_data)
+
+# View summary of regression results
+summary(ts_regression)
+```
+
+```{r}
+# Run time series regression using dynlm
+ts_regression_dyn <- dynlm(ratio ~ protestant + catholic + none, data = merged_data)
+
+# View summary of regression results
+summary(ts_regression_dyn)
+```
+
