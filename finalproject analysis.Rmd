@@ -12,6 +12,7 @@ library(lmtest)
 library(ggplot2)
 library(forecast)
 library(tidyr)
+library(stargazer)
 ```
 
 
@@ -186,7 +187,21 @@ summary(ts_regression)
 # Run time series regression using dynlm
 ts_regression_dyn <- dynlm(ratio ~ protestant + catholic + none, data = merged_data)
 
+ts_regression_dyn2 <- dynlm(ratio ~ none, data = merged_data)
+
+ts_regression_dyn3 <- dynlm(ratio ~ none, data = merged_data)
+
 # View summary of regression results
 summary(ts_regression_dyn)
+summary(ts_regression_dyn2)
+summary(ts_regression_dyn3)
+```
+```{r}
+# Generate the regression table using stargazer
+reg_table <- stargazer(ts_regression_dyn, type = "text", title = "Time Series Regression Results",
+                       align = TRUE, font.size = "small", header = FALSE)
+
+# Export the regression table to a Word document
+cat(reg_table, file = "reg_table.docx")
 ```
 
